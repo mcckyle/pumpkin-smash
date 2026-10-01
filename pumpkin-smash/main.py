@@ -1,24 +1,78 @@
 ##########################################################################################
 ##Filename: main.py
 ##Author: Kyle McColgan
-##Date: 19 October 2025
+##Date: 1 October 2026
 ##Description: This file contains the main game file for the pumpkin smash game.
 ##########################################################################################
 
-import pygame
-import sys
-import random
 import math
+import random
+import sys
+
+import pygame
 
 ##########################################################################################
 
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
-INITIAL_PUMPKIN_SPEED = 5
-SPEED_INCREMENT = 0.1
 FPS = 60
 
+INITIAL_PUMPKIN_SPEED = 5.0
+SPEED_INCREMENT = 0.1
+
+SECOND_PUMPKIN_SCORE = 20
+THIRD_PUMPKIN_SCORE = 30
+
+GHOST_SPEED = 4.0
+GHOST_SIZE = (100, 120)
+
+MESSAGE_DURATION = 900
+MESSAGE_FADE_SPEED = 5
+
+SKY_TOP = (45, 68, 92)
+SKY_BOTTOM = (218, 126, 66)
+
+GROUND_TOP = (55, 67, 47)
+GROUND_BOTTOM = (28, 37, 29)
+
+WHITE = (255, 255, 255)
+MUTED_WHITE = (232, 235, 231)
+
+SHADOW = (12, 16, 14)
+DANGER = (255, 104, 91)
+
 ##########################################################################################
+
+def quit_game():
+    pygame.quit()
+    sys.exit()
+
+def spawn_entity(image):
+    """Create a new entity rectangle at a random position above the screen."""
+    rect = image.get_rect()
+    x = random.randint(0, SCREEN_WIDTH - rect.width)
+    y = random.randint(-rect.height - 40, -10)
+    rect.topleft = (x, y)
+    return rect
+
+def create_gradient(top_color, bottom_color):
+    """Create a reusable vertical gradient surface."""
+    surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    for y in range(SCREEN_HEIGHT):
+        blend = y / (SCREEN_HEIGHT - 1)
+        color = tuple(int(top_color[channel] * (1 - blend) + bottom_color[channel] * blend) for channel in range(3))
+        pygame.draw.line(surface, color, (0, y), (SCREEN_WIDTH, y))
+
+    return surface
+
+def render_text_with_shadow(screen, font, text, position, color=WHITE, shadow_color=SHADOW, shadow_offset=(2,2)):
+    """Render readable text with a subtle shadow."""
+    shadow = font.render(text, True, shadow_color)
+    foreground = font.render(text, True, color)
+
+    screen.blit(shadow, (position[0] + shadow_offset[0], position[1] + shadow_offset[1]))
+    screen.blit(foreground, position)
 
 def main():
     #Initalize Pygame.
@@ -29,170 +83,216 @@ def main():
 
     #Load assets...
     try:
-        pumpkin_img = pygame.image.load('pumpkin-03.png').convert_alpha()
-        explosion_imgs = [pygame.image.load(f'explosion-{i}.png').convert_alpha() for i in range (1,3)]
-        ghost_img = pygame.image.load('ghost.webp').convert_alpha()
-        ghost_img = pygame.transform.scale(ghost_img, (100, 120))
-    except pygame.error as e:
-        print(f"Error loading images: {e}")
-        pygame.quit()
-        sys.exit()
+        pumpkin_img = pygame.image.load("pumpkin-03.png").convert_alpha()
+        explosion_imgs = [pygame.image.load(f"explosion-{index}.png").convert_alpha() for index in range (1,3)]
+        ghost_img = pygame.image.load("ghost.webp").convert_alpha()
+        ghost_img = pygame.transform.scale(ghost_img, GHOST_SIZE)
+    except pygame.error as error:
+        print(f"Error loading image: {error}")
+        quit_game()
 
-    #Font
-    font = pygame.font.Font(None, 42)
+    #Fonts.
+    score_font = pygame.font.Font(None, 42)
+    message_font = pygame.font.Font(None, 48)
+    game_over_font = pygame.font.Font(None, 58)
+    subtitle_font = pygame.font.Font(None, 30)
 
-    pumpkin_rect = pumpkin_img.get_rect()
-    pumpkin_rect.topleft = (random.randint(0, SCREEN_WIDTH - pumpkin_rect.width), 0)
+    background = create_gradient(SKY_TOP, SKY_BOTTOM)
+    ground = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT // 2))
 
-    def spawn_entity(img):
-        """Return a new rect at a random x at top of the screen."""
-        rect = img.get_rect()
-        rect.topleft = (random.randint(0, SCREEN_WIDTH - pumpkin_rect.width), 0)
-        return rect
-
-    def draw_dynamic_gradient(screen, time):
-        #A smoother gradient that changes hues slightly as the game progresses.
-        top_color = (135, 206, 250)
-        bottom_color = (255, 170, 60)
-        hue_shift = int(30 * math.sin(time * 0.0003))
-        for y in range(SCREEN_HEIGHT):
-            blend = y / SCREEN_HEIGHT
-            r = min(255, max(0, int(top_color[0] * (1 - blend) + bottom_color[0] * blend) + hue_shift))
-            g = min(255, max(0, int(top_color[1] * (1 - blend) + bottom_color[1] * blend)))
-            b = min(255, max(0, int(top_color[2] * (1 - blend) + bottom_color[2] * blend)))
-            pygame.draw.line(screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
+    for y in range(ground.get_height()):
+        blend = y / (ground.get_height() - 1)
+        color = tuple(int(GROUND_TOP[channel] * (1 - blend) + GROUND_BOTTOM[channel] * blend) for channel in range(3))
+        pygame.draw.line(ground, color, (0, y), (SCREEN_WIDTH, y))
 
     #Game State Variables...
     score = 0
-    pumpkins = [spawn_entity(pumpkin_img)]
     pumpkin_speed = INITIAL_PUMPKIN_SPEED
+    pumpkins = [spawn_entity(pumpkin_img)]
     explosions = []
-    message_text = None
-    message_alpha = 0
-    message_color = (255, 255, 255)
+
     ghost_rect = spawn_entity(ghost_img)
-    ghost_speed = 4
+    ghost_speed = GHOST_SPEED
+    ghost_base_x = ghost_rect.x
+
     game_over = False
 
+    message_text = None
+    message_color = WHITE
+    message_alpha = 0
+    message_timer = 0
+
+    running = True
     #Main game loop...
-    while True:
+    while running:
+        delta_time = clock.tick(FPS)
+        current_time = pygame.time.get_ticks()
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                quit_game()
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and not game_over:
+            if (event.type == pygame.MOUSEBUTTONDOWN and not game_over):
+                """Ghost collision takes priority."""
                 if ghost_rect.collidepoint(event.pos):
                     game_over = True
                     message_text = "👻 You clicked the ghost! Game over!"
-                    message_color = (255, 50, 50)
+                    message_color = DANGER
                     message_alpha = 255
+                    message_timer = MESSAGE_DURATION
                     continue
 
                 #Check the pumpkins...
-                for rect in pumpkins:
-                    if rect.collidepoint(event.pos):
+                for pumpkin_rect in pumpkins:
+                    if pumpkin_rect.collidepoint(event.pos):
                         score += 1
-                        explosions.append({"rect": rect.copy(), "frame": 0, "alpha": 255})
-                        rect.topleft = (random.randint(0, SCREEN_WIDTH - rect.width), 0)
+                        explosions.append({"rect": pumpkin_rect.copy(), "frame": 0, "alpha": 255})
+                        pumpkin_rect.topleft = (random.randint(0, SCREEN_WIDTH - pumpkin_rect.width), random.randint(-pumpkin_rect.height * 2, -pumpkin_rect.height))
                         pumpkin_speed += SPEED_INCREMENT
                         message_text = "Nice!"
-                        message_color = (255, 255, 255)
+                        message_color = WHITE
                         message_alpha = 255
+                        message_timer = MESSAGE_DURATION
+
+                        break
 
         if not game_over:
-            #Increase the pumpkin count by scroll thresholds...
-            target_pumpkins = 1
-
-            if score >= 30:
+            """Determine pumpkin count."""
+            if score >= THIRD_PUMPKIN_SCORE:
                 target_pumpkins = 3
-            elif score >= 20:
+            elif score >= SECOND_PUMPKIN_SCORE:
                 target_pumpkins = 2
+            else:
+                target_pumpkins = 1
 
             while len(pumpkins) < target_pumpkins:
                 pumpkins.append(spawn_entity(pumpkin_img))
 
             #Move pumpkins...
-            for rect in pumpkins:
-                rect.y += pumpkin_speed
-                if rect.top > SCREEN_HEIGHT:
-                    rect.topleft = rect.topleft = (random.randint(0, SCREEN_WIDTH - rect.width), 0)
+            for pumpkin_rect in pumpkins:
+                pumpkin_rect.y += pumpkin_speed
+
+                if pumpkin_rect.top > SCREEN_HEIGHT:
+                    pumpkin_rect.topleft = (random.randint(0, SCREEN_WIDTH - pumpkin_rect.width), random.randint(-pumpkin_rect.height * 2, -pumpkin_rect.height))
                     pumpkin_speed += SPEED_INCREMENT
                     #score = 0
                     message_text = "Miss!"
-                    message_color = (255, 80, 80)
+                    message_color = DANGER
                     message_alpha = 255
+                    message_timer = MESSAGE_DURATION
 
-            #Move the ghost...
+            """Move the ghost vertically."""
             ghost_rect.y += ghost_speed
-            ghost_rect.x += int(3 * math.sin(pygame.time.get_ticks() * 0.003))
+
+            """Give the ghost a controlled floating motion."""
+            ghost_rect.x = int(ghost_base_x + math.sin(current_time * 0.0025) * 45)
+            ghost_rect.x = max(0, min(SCREEN_WIDTH - ghost_rect.width, ghost_rect.x))
+
+            """Respawn the ghost."""
             if ghost_rect.top > SCREEN_HEIGHT:
                 ghost_rect = spawn_entity(ghost_img)
+                ghost_base_x = ghost_rect.x
 
-            alpha = 190 + int(40 * math.sin(pygame.time.get_ticks() * 0.004))
-            ghost_img.set_alpha(alpha)
-            screen.blit(ghost_img, ghost_rect)
+        """Background."""
+        screen.blit(background, (0, 0))
 
-        #Draw the background...
-        draw_dynamic_gradient(screen, pygame.time.get_ticks())
+        #Ground begins around the horizon.
+        ground_y = SCREEN_HEIGHT // 2
+        screen.blit(ground, (0, ground_y))
 
-        # Draw the grass ...
-        grass_rect = pygame.Rect(0, SCREEN_HEIGHT // 2, SCREEN_WIDTH, SCREEN_HEIGHT // 2)
-        pygame.draw.rect(screen, (34, 139, 34), grass_rect) # Grass color
+        """Atmospheric Details."""
+        horizon = pygame.Surface((SCREEN_WIDTH, 90), pygame.SRCALPHA)
+
+        for y in range(90):
+            alpha = int(38 * (1 - y / 90))
+
+            pygame.draw.line(horizon, (255, 188, 102, alpha), (0, y), (SCREEN_WIDTH, y))
+            screen.blit(horizon, (0, ground_y - 45))
 
         #Draw pumpkins...
-        for rect in pumpkins:
-            offset_y = int(5 * math.sin((pygame.time.get_ticks() + rect.x) * 0.004))
-            shadow_rect = rect.copy()
-            shadow_rect.move_ip(5, 10)
-            pygame.draw.ellipse(screen, (0, 0, 0, 80), shadow_rect.inflate(-rect.width * 0.5, -rect.height * 0.8))
-            screen.blit(pumpkin_img, (rect.x, rect.y + offset_y))
+        for pumpkin_rect in pumpkins:
+            bob = int(math.sin((current_time + pumpkin_rect.x * 8) * 0.004) * 4)
+            draw_rect = pumpkin_rect.copy()
+            draw_rect.y += bob
+
+            #Ground shadow.
+            if draw_rect.bottom > ground_y:
+                shadow_width = max(20, int(draw_rect.width * 0.55))
+                shadow_height = max(8, int(draw_rect.height * 0.12))
+                shadow_rect = pygame.Rect(draw_rect.centerx - shadow_width // 2, ground_y - shadow_height // 2, shadow_width, shadow_height)
+                shadow_surface = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
+                pygame.draw.ellipse(shadow_surface, (0, 0, 0, 85), shadow_surface.get_rect())
+                screen.blit(shadow_surface, shadow_rect)
+
+            screen.blit(pumpkin_img, draw_rect)
 
         #Draw the ghost (slight transparency).
         if not game_over:
-            ghost_img.set_alpha(210)
-            screen.blit(ghost_img, ghost_rect)
+            ghost_alpha = 190 + int(25 * math.sin(current_time * 0.003))
+            ghost_surface = ghost_img.copy()
+            ghost_surface.set_alpha(ghost_alpha)
+            ghost_bob = int(math.sin(current_time * 0.004) * 5)
+            screen.blit(ghost_surface, (ghost_rect.x, ghost_rect.y + ghost_bob))
 
         #Draw explosions ...
-        new_explosions = []
-        for exp in explosions:
-            if exp["frame"] < len(explosion_imgs):
-                img = explosion_imgs[exp["frame"]].copy()
-                flicker = 200 + int(55 * math.sin(pygame.time.get_ticks() * 0.02))
-                img.set_alpha(min(exp["alpha"], flicker))
-                screen.blit(img, exp["rect"])
-                exp["frame"] += 1
-                exp["alpha"] -= 30
-                new_explosions.append(exp)
-        explosions = new_explosions
+        active_explosions = []
+        for explosion in explosions:
+            frame = explosion["frame"]
+
+            if frame < len(explosion_imgs):
+                image = explosion_imgs[frame].copy()
+                image.set_alpha(explosion["alpha"])
+                screen.blit(image, explosion["rect"])
+                explosion["frame"] += 1
+                explosion["alpha"] -= 32
+                active_explosions.append(explosion)
+        explosions = active_explosions
 
         #Render the score ...
-        score_surface = font.render(f"Score: {score}", True, (255, 255, 255))
-        screen.blit(score_surface, (15,10))
+        score_text = f"SCORE {score:02d}"
+        score_surface = score_font.render(score_text, True, WHITE)
+        score_panel = pygame.Surface((score_surface.get_width() + 32, score_surface.get_height() + 18), pygame.SRCALPHA)
+        pygame.draw.rect(score_panel, (16, 23, 27, 175), score_panel.get_rect(), border_radius=12)
+        screen.blit(score_panel, (16, 16))
+        screen.blit(score_surface, (32, 25))
 
         #Message fade...
         if message_text and message_alpha > 0:
-            msg_surface = font.render(message_text, True, message_color)
-            msg_surface.set_alpha(message_alpha)
-            msg_x = SCREEN_WIDTH // 2 - msg_surface.get_width() // 2
-            msg_y = SCREEN_HEIGHT // 4
-            screen.blit(msg_surface, (msg_x, msg_y))
-            message_alpha -= 4
+            message_surface = message_font.render(message_text, True, message_color)
+            message_surface.set_alpha(message_alpha)
+            message_x = (SCREEN_WIDTH - message_surface.get_width()) // 2
+            message_y = 120
+
+            #Small shadow.
+            shadow_surface = message_font.render(message_text, True, SHADOW)
+            shadow_surface.set_alpha(max(0, message_alpha - 40))
+            screen.blit(shadow_surface, (message_x + 2, message_y + 3))
+            screen.blit(message_surface, (message_x, message_y))
+            message_alpha = max(0, message_alpha - MESSAGE_FADE_SPEED)
+            message_timer = max(0, message_timer - delta_time)
+
+            if message_timer == 0:
+                message_text = None
 
         #Game-over overlay....
         if game_over:
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
-            overlay.set_alpha(180)
-            overlay.fill((20, 20, 20))
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((10, 14, 17, 190))
             screen.blit(overlay, (0, 0))
-            go_text = font.render("👻 Game Over - Click X to Exit", True, (255, 255, 255))
-            msg_x = SCREEN_WIDTH // 2 - go_text.get_width() // 2
-            msg_y = SCREEN_HEIGHT // 2 - go_text.get_height() // 2
-            screen.blit(go_text, (msg_x, msg_y))
+            title = game_over_font.render("👻 Game Over - Click X to Exit", True, WHITE)
+            subtitle = subtitle_font.render(f"Final score {score:02d}", True, MUTED_WHITE)
+            instruction = subtitle_font.render("Close the window to exit", True, (190, 198, 194))
+            title_x = (SCREEN_WIDTH - title.get_width()) // 2
+            subtitle_x = (SCREEN_WIDTH - subtitle.get_width()) // 2
+            instruction_x = (SCREEN_WIDTH - instruction.get_width()) // 2
+            screen.blit(title, (title_x, SCREEN_HEIGHT // 2 - 60))
+            screen.blit(subtitle, (subtitle_x, SCREEN_HEIGHT // 2 + 5))
+            screen.blit(instruction, (instruction_x, SCREEN_HEIGHT // 2 + 42))
 
         #Update the display...
         pygame.display.flip()
-        clock.tick(FPS)
+
+    quit_game()
 
 if __name__ == "__main__":
     main()
